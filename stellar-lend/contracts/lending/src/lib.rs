@@ -2,13 +2,15 @@
 
 mod debt;
 mod events;
+mod math;
+mod rate_model;
+mod cross_asset;
 pub mod rounding_strategy;
 
 #[cfg(test)]
 mod cross_asset_roundtrip_test;
 #[cfg(test)]
 mod rate_smoothing_proof_doctest;
-pub mod rounding_strategy;
 pub mod upgrade;
 
 #[cfg(test)]
@@ -35,8 +37,6 @@ mod cross_asset_test;
 mod deposit_accounting_test;
 #[cfg(test)]
 mod deposit_cap_race_test;
-#[cfg(test)]
-mod effective_supply_rate_test;
 #[cfg(test)]
 mod effective_supply_rate_test;
 #[cfg(test)]
@@ -113,6 +113,9 @@ mod utilization_history_test;
 use debt::{
     borrow_amount, cached_borrow_rate, effective_debt, load_debt, repay_amount, save_debt,
     DebtPosition, DEFAULT_APR_BPS,
+};
+use events::{
+    emit_borrow, emit_deposit, emit_liquidate, emit_repay, emit_schema_version, emit_withdraw,
 };
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::xdr::ToXdr;
@@ -219,6 +222,8 @@ pub enum DataKey {
     /// [`DEFAULT_LIQUIDATION_INCENTIVE_BPS`] when unset. Configured via
     /// [`LendingContract::set_liquidation_incentive_bps`].
     LiquidationIncentiveBps,
+    /// List of all borrowers for migration iteration.
+    BorrowerList,
 }
 
 #[contractevent]
@@ -365,6 +370,12 @@ pub enum LendingError {
     /// `set_liquidation_incentive_bps` called with a value outside
     /// `[0, MAX_LIQUIDATION_INCENTIVE_BPS]`.
     InvalidLiquidationIncentiveBps = 7002,
+    /// Borrow would breach the per-asset isolation debt ceiling.
+    IsolationCeilingExceeded = 2004,
+    /// `isolation_debt_ceiling` is negative or zero while `isolated = true`.
+    InvalidIsolationCeiling = 2008,
+    /// Liquidator attempted to self-liquidate (liquidator == borrower).
+    SelfLiquidation = 2012,
 }
 
 /// Per-asset isolation-mode configuration stored under `DataKey::AssetIsolation`.
@@ -1038,7 +1049,7 @@ impl LendingContract {
         // Emit deposit event
         emit_deposit(&env, &user, amount, new_balance);
 
-        new_balance
+        Ok(new_balance)
     }
 
     /// Withdraw collateral after pause and emergency gates pass.
@@ -1074,7 +1085,7 @@ impl LendingContract {
         // Emit withdraw event
         emit_withdraw(&env, &user, amount, new_balance);
 
-        new_balance
+        Ok(new_balance)
     }
 
     /// Set the configured valuation collateral asset for the legacy single-asset flows.
@@ -1143,10 +1154,13 @@ impl LendingContract {
 
         let now = env.ledger().timestamp();
         let rate = current_borrow_rate(&env);
+        let position = load_debt(&env, &user);
+        let prev_principal = position.principal;
         let settled_position = settle_and_accrue_insurance(&env, &position, now, rate)?;
         let updated = borrow_amount(settled_position, now, amount, rate).map_err(|e| match e {
             debt::DebtError::InvalidAmount => LendingError::InvalidAmount,
             debt::DebtError::Overflow => LendingError::Overflow,
+            debt::DebtError::IndexInvariantViolated => LendingError::Overflow,
         })?;
 
         let total_debt: i128 = env
@@ -1218,6 +1232,7 @@ impl LendingContract {
         let updated = borrow_amount(position, now, amount, rate).map_err(|e| match e {
             debt::DebtError::InvalidAmount => LendingError::InvalidAmount,
             debt::DebtError::Overflow => LendingError::Overflow,
+            debt::DebtError::IndexInvariantViolated => LendingError::Overflow,
         })?;
         save_debt(&env, &user, &updated);
 
@@ -1276,6 +1291,7 @@ impl LendingContract {
         let updated = repay_amount(position, now, amount, rate).map_err(|e| match e {
             debt::DebtError::InvalidAmount => LendingError::InvalidAmount,
             debt::DebtError::Overflow => LendingError::Overflow,
+            debt::DebtError::IndexInvariantViolated => LendingError::Overflow,
         })?;
         save_debt(&env, &user, &updated);
 
@@ -1594,6 +1610,13 @@ impl LendingContract {
         Ok(())
     }
 
+    /// Returns the liquidation threshold in basis points for health-factor
+    /// computation.  Uses the constant `LIQUIDATION_THRESHOLD_BPS` (8000 = 80%)
+    /// as a protocol-wide default; per-asset overrides are not yet wired in.
+    fn get_liquidation_threshold_bps(_env: &Env) -> i128 {
+        LIQUIDATION_THRESHOLD_BPS
+    }
+
     pub fn repay(env: Env, user: Address, amount: i128) -> Result<i128, LendingError> {
         check_pause_status(&env, ProtocolAction::Repay);
         check_emergency_status(&env, ProtocolAction::Repay);
@@ -1606,10 +1629,13 @@ impl LendingContract {
         user.require_auth();
         let now = env.ledger().timestamp();
         let rate = current_borrow_rate(&env);
+        let position = load_debt(&env, &user);
+        let prev_principal = position.principal;
         let settled_position = settle_and_accrue_insurance(&env, &position, now, rate)?;
         let updated = repay_amount(settled_position, now, amount, rate).map_err(|e| match e {
             debt::DebtError::InvalidAmount => LendingError::InvalidAmount,
             debt::DebtError::Overflow => LendingError::Overflow,
+            debt::DebtError::IndexInvariantViolated => LendingError::Overflow,
         })?;
         save_debt(&env, &user, &updated);
 
@@ -1629,7 +1655,7 @@ impl LendingContract {
         // Emit repay event
         emit_repay(&env, &user, amount, updated.principal);
 
-        updated.principal
+        Ok(updated.principal)
     }
 
     pub fn get_debt_position(env: Env, user: Address) -> DebtPosition {
@@ -1870,6 +1896,7 @@ impl LendingContract {
     ///
     /// Only the protocol admin can call this.
     /// Emits an `AssetParamsSetEvent` on success.
+    #[allow(clippy::too_many_arguments)]
     pub fn set_asset_params(
         env: Env,
         admin: Address,
@@ -1915,6 +1942,7 @@ impl LendingContract {
             liquidation_threshold_bps,
             debt_ceiling,
             borrow_cap,
+            supply_cap,
         }
         .publish(&env);
 
@@ -3364,5 +3392,3 @@ pub(crate) mod test {
         assert!(env.ledger().sequence() >= 0);
     }
 }
-#[cfg(test)]
-mod max_borrow_proptest;

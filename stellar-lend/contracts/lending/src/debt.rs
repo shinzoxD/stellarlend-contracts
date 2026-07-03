@@ -8,6 +8,10 @@ use stellar_lend_common::BPS_DENOM;
 /// Default APR when no dynamic rate is available: 5% (500 bps).
 pub const DEFAULT_APR_BPS: i128 = 500;
 
+/// Fixed-point scale for the borrow index (1.0 = 10_000_000).
+/// New positions start with `borrow_index_snapshot = INDEX_SCALE`.
+pub const INDEX_SCALE: i128 = 10_000_000;
+
 /// Reserve factor used when no explicit value is configured: 0% (protocol takes nothing).
 ///
 /// Keeping the default at zero preserves existing behaviour for any call site
@@ -346,6 +350,7 @@ pub fn settle_accrual_split(
 
     let updated = DebtPosition {
         principal,
+        borrow_index_snapshot: position.borrow_index_snapshot,
         last_update: now,
     };
 
@@ -593,4 +598,42 @@ pub fn repay_amount_indexed(
         settled.principal - amount
     };
     Ok(settled)
+}
+
+/// Index-aware settlement: scales principal by the ratio of current to snapshot index.
+///
+/// If the snapshot is zero (pre-migration), treats it as the current index
+/// (ratio = 1.0) so the call degenerates to a simple accrual.
+pub fn settle_position(
+    position: &DebtPosition,
+    current_index: i128,
+    now: u64,
+) -> Result<DebtPosition, DebtError> {
+    let snapshot = position.borrow_index_snapshot;
+    let effective_index = if snapshot == 0 { current_index } else { snapshot };
+
+    if effective_index == 0 {
+        return Err(DebtError::IndexInvariantViolated);
+    }
+
+    // Scale principal by index ratio if indices differ.
+    if effective_index != current_index {
+        let scaled = position
+            .principal
+            .checked_mul(current_index)
+            .ok_or(DebtError::Overflow)?
+            .checked_div(effective_index)
+            .ok_or(DebtError::IndexInvariantViolated)?;
+        Ok(DebtPosition {
+            principal: scaled,
+            borrow_index_snapshot: current_index,
+            last_update: now,
+        })
+    } else {
+        Ok(DebtPosition {
+            principal: position.principal,
+            borrow_index_snapshot: current_index,
+            last_update: now,
+        })
+    }
 }
