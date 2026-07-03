@@ -68,7 +68,7 @@ fn setup() -> (
         &8000,
         &1_000_000_000_000i128,
         &0i128,
-    &0i128,
+        &0i128,
     );
     // 60 % LTV / 70 % liquidation threshold for debt asset
     client.set_asset_params(
@@ -78,7 +78,7 @@ fn setup() -> (
         &7000,
         &1_000_000_000_000i128,
         &0i128,
-    &0i128,
+        &0i128,
     );
 
     // Initial prices: both assets at $1.00
@@ -481,7 +481,7 @@ fn e2e_two_collateral_one_debt_shock() {
         &8000,
         &1_000_000_000_000i128,
         &0i128,
-    &0i128,
+        &0i128,
     );
     set_price(&env, &id, &asset_col2, 10_000_000); // $1.00
 

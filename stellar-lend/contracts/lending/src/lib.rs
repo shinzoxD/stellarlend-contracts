@@ -1,10 +1,10 @@
 #![no_std]
 
+mod cross_asset;
 mod debt;
 mod events;
 mod math;
 mod rate_model;
-mod cross_asset;
 pub mod rounding_strategy;
 
 #[cfg(test)]
