@@ -29,7 +29,3 @@ fuzzing = ["arbitrary"]
 version = "1"
 features = ["derive"]
 optional = true
-
-[[example]]
-name = "scaling_demo"
-path = "examples/scaling_demo.rs"
