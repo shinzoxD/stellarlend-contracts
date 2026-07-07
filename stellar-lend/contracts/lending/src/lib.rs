@@ -336,7 +336,7 @@ pub enum LendingError {
     InvalidFeeBps = 2005,
     InvalidFlashUtilizationBps = 2006,
     InsufficientCollateral = 2007,
-    InvalidLiquidationParams = 2010,
+    InvalidLiquidationParams = 2004,
     InvalidOracleSignature = 5001,
     PriceOutOfBounds = 3004,
     PriceUnavailable = 3005,
@@ -371,11 +371,11 @@ pub enum LendingError {
     /// `[0, MAX_LIQUIDATION_INCENTIVE_BPS]`.
     InvalidLiquidationIncentiveBps = 7002,
     /// Borrow would breach the per-asset isolation debt ceiling.
-    IsolationCeilingExceeded = 2004,
+    IsolationCeilingExceeded = 2009,
     /// `isolation_debt_ceiling` is negative or zero while `isolated = true`.
-    InvalidIsolationCeiling = 2008,
+    InvalidIsolationCeiling = 2010,
     /// Liquidator attempted to self-liquidate (liquidator == borrower).
-    SelfLiquidation = 2012,
+    SelfLiquidation = 2008,
 }
 
 /// Per-asset isolation-mode configuration stored under `DataKey::AssetIsolation`.
