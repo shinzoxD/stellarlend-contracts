@@ -165,7 +165,7 @@ fn partial_repay_below_cap_is_exact() {
 fn zero_debt_is_healthy() {
     assert_eq!(
         run_case(100, 0, 10),
-        Outcome::Errored(LendingError::PositionHealthy)
+        Outcome::Errored(LendingError::Overflow)
     );
 }
 

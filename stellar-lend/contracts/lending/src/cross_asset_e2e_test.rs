@@ -345,7 +345,18 @@ fn e2e_deep_underwater_seizure_capped_at_available_collateral() {
     let (env, client, id, _, borrower, _, asset_col, asset_dbt) = setup();
 
     client.deposit_collateral_asset(&borrower, &asset_col, &10_000i128);
-    client.borrow_asset(&borrower, &asset_dbt, &7_000i128);
+    // Use direct storage write to set debt high enough that seizure exceeds collateral
+    // Without the clamp, seized would be 20000/2 * 11000/10000 = 11000 > 10000
+    env.as_contract(&id, || {
+        env.storage().persistent().set(
+            &DataKey::DebtAsset(borrower.clone(), asset_dbt.clone()),
+            &DebtPosition {
+                principal: 20_000,
+                borrow_index_snapshot: 0,
+                last_update: env.ledger().timestamp(),
+            },
+        );
+    });
 
     // Crash collateral 90 % → deeply underwater
     set_price(&env, &id, &asset_col, 1_000_000); // $0.10
@@ -404,7 +415,11 @@ fn e2e_partial_liquidation_then_full_repay_and_withdraw() {
     let (env, client, id, _, borrower, _, asset_col, asset_dbt) = setup();
 
     client.deposit_collateral_asset(&borrower, &asset_col, &20_000i128);
-    client.borrow_asset(&borrower, &asset_dbt, &8_000i128);
+    // Borrow 12_000 so that after a 30% price drop (collateral at $0.70),
+    // HF < 10_000. At 8_000 the position stays healthy.
+    // 20_000 * 0.70 * 8000 / 10000 = 11200 weighted_col → need debt > 11200
+    let liquidation_check: i128 = 12_000;
+    client.borrow_asset(&borrower, &asset_dbt, &liquidation_check);
 
     // Moderate shock: collateral drops 30 %
     set_price(&env, &id, &asset_col, 7_000_000); // $0.70

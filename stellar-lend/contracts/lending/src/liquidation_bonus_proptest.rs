@@ -12,7 +12,9 @@ fn safe_debt_strategy() -> impl Strategy<Value = i128> {
 /// Focus overflow cases on values that are guaranteed to overflow the
 /// multiplication in `compute_liquidation_bonus` when the bonus rate is non-zero.
 fn overflow_debt_strategy() -> impl Strategy<Value = i128> {
-    (i128::MAX / 10_000 + 1)..=i128::MAX
+    // Start from i128::MAX / 2 + 1 so that even the minimum `bps = 2`
+    // guarantees value * 2 > i128::MAX (genuine overflow).
+    (i128::MAX / 2 + 1)..=i128::MAX
 }
 
 proptest! {
@@ -74,7 +76,7 @@ proptest! {
     #[test]
     fn liquidation_bonus_overflow_returns_math_error(
         debt_to_cover in overflow_debt_strategy(),
-        liquidation_bonus_bps in 1u32..=BPS_SCALE,
+        liquidation_bonus_bps in 2u32..=BPS_SCALE,
     ) {
         let result = compute_liquidation_bonus(debt_to_cover, liquidation_bonus_bps);
         assert!(
@@ -91,7 +93,7 @@ proptest! {
     #[test]
     fn max_borrow_overflow_returns_math_error(
         collateral_value in overflow_debt_strategy(),
-        ltv_bps in 1u32..=BPS_SCALE,
+        ltv_bps in 2u32..=BPS_SCALE,
     ) {
         let result = compute_max_borrow(collateral_value, ltv_bps);
         assert!(

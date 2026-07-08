@@ -39,9 +39,12 @@ fn oracle_keypair() -> Keypair {
 }
 
 fn build_oracle_payload(env: &Env, asset: &Address, price: i128, timestamp: u64) -> Bytes {
+    let asset_xdr = asset.to_xdr(env);
+    let asset_len = asset_xdr.len();
     let mut payload = Bytes::new(env);
     payload.append(&Bytes::from_slice(env, ORACLE_SIGNATURE_DOMAIN));
-    payload.append(&asset.to_xdr(env));
+    payload.append(&Bytes::from_slice(env, &asset_len.to_be_bytes()));
+    payload.append(&asset_xdr);
     payload.append(&Bytes::from_slice(env, &price.to_be_bytes()));
     payload.append(&Bytes::from_slice(env, &timestamp.to_be_bytes()));
     payload
@@ -176,8 +179,21 @@ fn liquidate_accepts_price_exactly_at_max_age() {
     configure_valuation_assets(&env, &contract_id, &collateral_asset, &debt_asset);
     let _keypair = configure_oracle_prices(&env, &client, &admin, &collateral_asset, &debt_asset);
 
-    client.deposit(&user, &100);
-    client.borrow(&user, &90);
+    let now = env.ledger().timestamp();
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Collateral(user.clone()), &100i128);
+        crate::debt::save_debt(
+            &env,
+            &user,
+            &crate::debt::DebtPosition {
+                principal: 90,
+                borrow_index_snapshot: 0,
+                last_update: now,
+            },
+        );
+    });
     advance_time(&env, DEFAULT_ORACLE_MAX_AGE_SECS);
 
     assert_eq!(
@@ -196,8 +212,21 @@ fn liquidate_rejects_when_collateral_price_is_just_stale() {
     configure_valuation_assets(&env, &contract_id, &collateral_asset, &debt_asset);
     let keypair = configure_oracle_prices(&env, &client, &admin, &collateral_asset, &debt_asset);
 
-    client.deposit(&user, &100);
-    client.borrow(&user, &90);
+    let now = env.ledger().timestamp();
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Collateral(user.clone()), &100i128);
+        crate::debt::save_debt(
+            &env,
+            &user,
+            &crate::debt::DebtPosition {
+                principal: 90,
+                borrow_index_snapshot: 0,
+                last_update: now,
+            },
+        );
+    });
     advance_time(&env, DEFAULT_ORACLE_MAX_AGE_SECS + 1);
     set_signed_price(&env, &client, &admin, &keypair, &debt_asset, 1_000);
 
@@ -218,8 +247,21 @@ fn liquidate_rejects_when_debt_price_is_just_stale() {
     configure_valuation_assets(&env, &contract_id, &collateral_asset, &debt_asset);
     let keypair = configure_oracle_prices(&env, &client, &admin, &collateral_asset, &debt_asset);
 
-    client.deposit(&user, &100);
-    client.borrow(&user, &90);
+    let now = env.ledger().timestamp();
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Collateral(user.clone()), &100i128);
+        crate::debt::save_debt(
+            &env,
+            &user,
+            &crate::debt::DebtPosition {
+                principal: 90,
+                borrow_index_snapshot: 0,
+                last_update: now,
+            },
+        );
+    });
     advance_time(&env, DEFAULT_ORACLE_MAX_AGE_SECS + 1);
     set_signed_price(&env, &client, &admin, &keypair, &collateral_asset, 2_000);
 

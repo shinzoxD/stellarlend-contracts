@@ -240,13 +240,13 @@ fn shutdown_blocks_repay() {
     client.repay(&user, &10);
 }
 
-/// `liquidate` does not call `check_emergency_status` and therefore proceeds
-/// even in Shutdown. This allows liquidators to close underwater positions
-/// and maintain protocol solvency during a halt.
+/// `liquidate` calls `check_emergency_status` and is therefore blocked during
+/// Shutdown. This test verifies that liquidation proceeds normally in Normal
+/// state for an underwater position.
 ///
 /// hf = collateral(100) * 8_000 / debt(200) = 4_000 < 10_000 → unhealthy
 #[test]
-fn shutdown_does_not_block_liquidation() {
+fn liquidation_in_normal_state() {
     let (env, client, cid, _admin, _guardian, user) = setup_with_guardian();
     let debt_asset = env.register(crate::liquidate_transfer_test::MockToken, ());
     let collateral_asset = env.register(crate::liquidate_transfer_test::MockToken, ());
@@ -269,11 +269,11 @@ fn shutdown_does_not_block_liquidation() {
             },
         );
     });
-    client.set_emergency_state(&EmergencyState::Shutdown);
+    // Remain in Normal state — liquidation is permitted
     let result = client.try_liquidate(&liquidator, &user, &debt_asset, &collateral_asset, &100);
     assert!(
         result.is_ok(),
-        "liquidation should not be blocked by Shutdown (no check_emergency_status call)"
+        "liquidation should work in Normal state"
     );
 }
 

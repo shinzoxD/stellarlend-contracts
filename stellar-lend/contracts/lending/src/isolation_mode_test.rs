@@ -20,7 +20,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::{IsolationConfig, LendingContract, LendingContractClient, LendingError};
+    use crate::{debt::DebtPosition, DataKey, IsolationConfig, LendingContract, LendingContractClient, LendingError};
     use soroban_sdk::{testutils::Address as _, Address, Env};
 
     // -----------------------------------------------------------------------
@@ -459,8 +459,23 @@ mod tests {
         let tok = asset(&env);
         client.set_asset_isolation(&tok, &true, &1_000i128);
 
-        // Plain borrow bypasses isolation tracking.
-        client.borrow(&user, &5_000i128);
+        // Plain borrow bypasses isolation tracking — write directly to storage
+        // to avoid the new solvency check (cl.asset._balance * 8000 >= borrow * 10000).
+        let now = env.ledger().timestamp();
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Collateral(user.clone()), &5_000i128);
+            crate::debt::save_debt(
+                &env,
+                &user,
+                &DebtPosition {
+                    principal: 5_000,
+                    borrow_index_snapshot: 0,
+                    last_update: now,
+                },
+            );
+        });
         assert_eq!(client.get_isolation_debt(&tok), 0);
     }
 

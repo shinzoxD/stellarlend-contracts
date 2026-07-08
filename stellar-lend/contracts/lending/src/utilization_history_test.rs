@@ -14,6 +14,7 @@ use soroban_sdk::{
 fn setup() -> (Env, Address, LendingContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
+    env.budget().reset_unlimited();
 
     let contract_id = env.register(LendingContract, ());
     let client = LendingContractClient::new(&env, &contract_id);

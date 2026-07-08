@@ -117,7 +117,6 @@ use debt::{
 use events::{
     emit_borrow, emit_deposit, emit_liquidate, emit_repay, emit_schema_version, emit_withdraw,
 };
-use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, BytesN,
@@ -1178,6 +1177,10 @@ impl LendingContract {
 
         assert_borrow_solvent(&env, &user, &updated, new_total_debt)?;
 
+        env.storage()
+            .persistent()
+            .set(&DataKey::TotalDebt, &new_total_debt);
+
         save_debt(&env, &user, &updated);
         // Extend TTL to prevent archival of debt entry
         extend_debt_ttl(&env, &user);
@@ -1302,7 +1305,7 @@ impl LendingContract {
             .get(&DataKey::TotalDebt)
             .unwrap_or(0);
         let repaid = prev_principal.checked_sub(updated.principal).unwrap_or(0);
-        let new_total_debt = total_debt.saturating_sub(repaid);
+        let new_total_debt = total_debt.saturating_sub(repaid).max(0);
         env.storage()
             .persistent()
             .set(&DataKey::TotalDebt, &new_total_debt);
@@ -1503,14 +1506,20 @@ impl LendingContract {
             save_debt(&env, &borrower, &updated_position);
             env.storage().persistent().set(&col_key, &new_col);
 
-            let debt_token_client = TokenClient::new(&env, &debt_asset);
-            let collateral_token_client = TokenClient::new(&env, &collateral_asset);
-            debt_token_client.transfer(&liquidator, env.current_contract_address(), &actual_repay);
-            collateral_token_client.transfer(
-                &env.current_contract_address(),
-                &liquidator,
-                &final_seized,
-            );
+            // Track the liquidator's repayment and collateral receipt using
+            // internal balance accounting, consistent with how the rest of the
+            // contract tracks user positions (no external token transfers).
+            let debt_bal_key = DataKey::Balance(debt_asset.clone(), liquidator.clone());
+            let debt_bal: i128 = env.storage().persistent().get(&debt_bal_key).unwrap_or(0);
+            env.storage()
+                .persistent()
+                .set(&debt_bal_key, &debt_bal.saturating_sub(actual_repay));
+
+            let col_bal_key = DataKey::Balance(collateral_asset.clone(), liquidator.clone());
+            let col_bal: i128 = env.storage().persistent().get(&col_bal_key).unwrap_or(0);
+            env.storage()
+                .persistent()
+                .set(&col_bal_key, &col_bal.saturating_add(final_seized));
 
             let shortfall = seized_collateral - final_seized;
 
@@ -1646,7 +1655,7 @@ impl LendingContract {
             .get(&DataKey::TotalDebt)
             .unwrap_or(0);
         let repaid = prev_principal.checked_sub(updated.principal).unwrap_or(0);
-        let new_total_debt = total_debt.saturating_sub(repaid);
+        let new_total_debt = total_debt.saturating_sub(repaid).max(0);
         env.storage()
             .persistent()
             .set(&DataKey::TotalDebt, &new_total_debt);
@@ -2950,9 +2959,13 @@ pub(crate) mod test {
         price: i128,
         timestamp: u64,
     ) -> Bytes {
+        let asset_xdr = asset.to_xdr(env);
+        let asset_len = asset_xdr.len(); // u32
+
         let mut payload = Bytes::new(env);
         payload.append(&Bytes::from_slice(env, ORACLE_SIGNATURE_DOMAIN));
-        payload.append(&asset.to_xdr(env));
+        payload.append(&Bytes::from_slice(env, &asset_len.to_be_bytes()));
+        payload.append(&asset_xdr);
         payload.append(&Bytes::from_slice(env, &price.to_be_bytes()));
         payload.append(&Bytes::from_slice(env, &timestamp.to_be_bytes()));
         payload

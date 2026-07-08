@@ -2,7 +2,7 @@ use crate::{LendingContract, LendingContractClient, PauseType};
 use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Ledger},
-    vec, Address, Bytes, Env,
+    vec, Address, Bytes, Env, Symbol,
 };
 
 fn setup() -> (
@@ -33,10 +33,11 @@ fn setup() -> (
     // We rely on the fact that flash_loan reads treasury balance only after
     // pause/emergency checks; thus we can set balances even without full
     // token accounting.
-    env.storage()
-        //
-        .persistent()
-        .set(&(crate::DataKey::Treasury(asset.clone())), &1_000_000i128);
+    env.as_contract(&lending_id, || {
+        env.storage()
+            .persistent()
+            .set(&(crate::DataKey::Treasury(asset.clone())), &1_000_000i128);
+    });
 
     (env, client, admin, user, receiver)
 }
@@ -119,18 +120,22 @@ fn flash_loan_allowed_when_unpaused_and_normal_emergency_state() {
     // a minimal contract in this test module.
     let receiver_id = env.register(FlashReceiverOk, ());
     let receiver_addr = receiver_id.clone();
+    // Tell the receiver the lending contract address so it can repay
+    FlashReceiverOkClient::new(&env, &receiver_id).set_lending_contract(&client.address);
 
     let asset = Address::generate(&env);
     // Seed treasury liquidity for this specific asset.
-    env.storage()
-        .persistent()
-        .set(&(crate::DataKey::Treasury(asset.clone())), &1_000_000i128);
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&(crate::DataKey::Treasury(asset.clone())), &1_000_000i128);
 
-    // Fund receiver so repay_flash_loan can succeed.
-    env.storage().persistent().set(
-        &(crate::DataKey::Balance(asset.clone(), receiver_addr.clone())),
-        &0i128,
-    );
+        // Fund receiver so repay_flash_loan can succeed.
+        env.storage().persistent().set(
+            &(crate::DataKey::Balance(asset.clone(), receiver_addr.clone())),
+            &0i128,
+        );
+    });
 
     let params = Bytes::new(&env);
     client.flash_loan(&initiator, &receiver_addr, &asset, &10, &params);
@@ -138,7 +143,8 @@ fn flash_loan_allowed_when_unpaused_and_normal_emergency_state() {
 
 // -----------------------------------------------------------------------------
 // Minimal flash loan receiver used for the unpaused success case.
-// It repays via calling `repay_flash_loan` on the LendingContract.
+// It repays by using `env.as_contract` to add funds back to the
+// LendingContract's Treasury.
 // -----------------------------------------------------------------------------
 
 #[contract]
@@ -146,17 +152,30 @@ pub struct FlashReceiverOk;
 
 #[contractimpl]
 impl FlashReceiverOk {
+    pub fn set_lending_contract(env: Env, lending_contract: Address) {
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "lending"), &lending_contract);
+    }
+
     pub fn on_flash_loan(
         env: Env,
-        initiator: Address,
+        _initiator: Address,
         asset: Address,
         amount: i128,
         fee: i128,
         _params: Bytes,
     ) {
-        let tre_key = crate::DataKey::Treasury(asset);
-        let tre_bal: i128 = env.storage().persistent().get(&tre_key).unwrap_or(0);
-        let total = amount.saturating_add(fee);
-        env.storage().persistent().set(&tre_key, &(tre_bal + total));
+        let lending_contract: Address = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, "lending"))
+            .unwrap();
+        env.as_contract(&lending_contract, || {
+            let tre_key = crate::DataKey::Treasury(asset);
+            let tre_bal: i128 = env.storage().persistent().get(&tre_key).unwrap_or(0);
+            let total = amount.saturating_add(fee);
+            env.storage().persistent().set(&tre_key, &(tre_bal + total));
+        });
     }
 }

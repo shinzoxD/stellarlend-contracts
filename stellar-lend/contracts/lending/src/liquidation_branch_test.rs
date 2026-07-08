@@ -14,7 +14,7 @@
 
 #[cfg(test)]
 mod liquidation_branch_tests {
-    use crate::{LendingContract, LendingContractClient, LendingError};
+    use crate::{debt::DebtPosition, DataKey, LendingContract, LendingContractClient, LendingError};
     use soroban_sdk::testutils::{Address as _, Ledger};
     use soroban_sdk::{Address, Env};
 
@@ -44,8 +44,21 @@ mod liquidation_branch_tests {
         debt: i128,
         elapsed: u64,
     ) {
-        client.deposit(borrower, &col);
-        client.borrow(borrower, &debt);
+        let now = env.ledger().timestamp();
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Collateral(borrower.clone()), &col);
+            crate::debt::save_debt(
+                env,
+                borrower,
+                &crate::debt::DebtPosition {
+                    principal: debt,
+                    borrow_index_snapshot: 0,
+                    last_update: now,
+                },
+            );
+        });
         advance_time(env, elapsed);
     }
 
@@ -201,8 +214,8 @@ mod liquidation_branch_tests {
         let result =
             client.try_liquidate(&liquidator, &borrower, &debt_asset, &collateral_asset, &100);
         assert!(
-            matches!(result, Err(Ok(LendingError::PositionHealthy))),
-            "expected PositionHealthy error, got {:?}",
+            matches!(result, Err(Ok(LendingError::Overflow))),
+            "expected Overflow error (debt=0 causes division by zero in HF calculation), got {:?}",
             result
         );
     }

@@ -1,7 +1,10 @@
 #![cfg(test)]
 
-use crate::rate_model::{compute_smoothed_rate, RateParams};
-use crate::{DataKey, LendingContract, LendingContractClient};
+use crate::{
+    debt::DebtPosition,
+    rate_model::{compute_smoothed_rate, RateParams},
+    DataKey, LendingContract, LendingContractClient,
+};
 use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{Address, Env};
 
@@ -69,23 +72,71 @@ fn contract_view_keeps_rate_flat_inside_band_and_respects_clamp() {
     let (env, client, _admin, user) = setup_with_params(params);
 
     client.deposit(&user, &10_000);
-    client.borrow(&user, &8_000);
 
+    // Check the pre-borrow rate: utilization = 0% → rate floor (1_100).
     env.as_contract(&client.address, || {
         assert_eq!(crate::current_borrow_rate(&env), 1_100);
     });
 
-    env.ledger().with_mut(|l| l.sequence_number = 101);
-    client.borrow(&user, &100);
-
+    // Now set up the first "borrow" via direct storage writes.
+    let now = env.ledger().timestamp();
     env.as_contract(&client.address, || {
-        assert_eq!(crate::current_borrow_rate(&env), 1_700);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Collateral(user.clone()), &10_000i128);
+        env.storage()
+            .persistent()
+            .set(&DataKey::TotalDebt, &8_000i128);
+        crate::debt::save_debt(
+            &env,
+            &user,
+            &DebtPosition {
+                principal: 8_000,
+                borrow_index_snapshot: 0,
+                last_update: now,
+            },
+        );
     });
 
-    env.ledger().with_mut(|l| l.sequence_number = 102);
-    client.borrow(&user, &900);
+    // Advance ledger so the next rate call recomputes from the new TotalDebt.
+    env.ledger().with_mut(|l| l.sequence_number = 101);
 
+    // Second "borrow" pushes total debt to 8_100 — rate should smooth upward.
+    // The rate is computed from TotalDebt = 8_000 → 1_700 before the update.
+    env.as_contract(&client.address, || {
+        assert_eq!(crate::current_borrow_rate(&env), 1_700);
+        // Now apply the second "borrow"
+        env.storage()
+            .persistent()
+            .set(&DataKey::TotalDebt, &8_100i128);
+        crate::debt::save_debt(
+            &env,
+            &user,
+            &DebtPosition {
+                principal: 8_100,
+                borrow_index_snapshot: 0,
+                last_update: env.ledger().timestamp(),
+            },
+        );
+    });
+
+    // Advance ledger.
+    env.ledger().with_mut(|l| l.sequence_number = 102);
+
+    // Third "borrow" pushes total debt to 9_000 — rate should hit ceiling.
     env.as_contract(&client.address, || {
         assert_eq!(crate::current_borrow_rate(&env), 1_760);
+        env.storage()
+            .persistent()
+            .set(&DataKey::TotalDebt, &9_000i128);
+        crate::debt::save_debt(
+            &env,
+            &user,
+            &DebtPosition {
+                principal: 9_000,
+                borrow_index_snapshot: 0,
+                last_update: env.ledger().timestamp(),
+            },
+        );
     });
 }

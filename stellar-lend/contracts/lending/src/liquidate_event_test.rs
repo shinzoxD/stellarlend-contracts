@@ -63,9 +63,12 @@ fn liquidate_emits_event_with_correct_fields() {
 
     client.liquidate(&liquidator, &user, &debt_asset, &collateral_asset, &150);
 
+    let events = env.events().all();
+    // The shortfall (10) triggers a `bad_debt` event before LiquidationEventV1.
+    assert_eq!(events.events().len(), 2, "expected bad_debt + LiquidationEventV1");
     assert_eq!(
-        env.events().all(),
-        [LiquidationEventV1 {
+        events.events()[1],
+        LiquidationEventV1 {
             schema_version: 1,
             liquidator: liquidator.clone(),
             borrower: user.clone(),
@@ -74,7 +77,7 @@ fn liquidate_emits_event_with_correct_fields() {
             health_factor_before: 4000,
             shortfall: 10,
         }
-        .to_xdr(&env, &cid)],
+        .to_xdr(&env, &cid),
     );
 }
 

@@ -44,9 +44,23 @@ fn setup() -> (
 
 /// Set up a position that is unhealthy: hf = col*8000/debt < 10000.
 /// deposit(100), borrow(200) → hf = 100*8000/200 = 4000 < 10000.
-fn make_unhealthy(client: &LendingContractClient, user: &Address) {
-    client.deposit(user, &100);
-    client.borrow(user, &200);
+fn make_unhealthy(env: &Env, client: &LendingContractClient, user: &Address) {
+    let now = env.ledger().timestamp();
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Collateral(user.clone()), &100_i128);
+        use crate::debt::DebtPosition;
+        crate::debt::save_debt(
+            &env,
+            &user,
+            &DebtPosition {
+                principal: 200,
+                borrow_index_snapshot: 0,
+                last_update: now,
+            },
+        );
+    });
 }
 
 // ── Valid liquidation: repay < max_repay ─────────────────────────────────────
@@ -55,8 +69,8 @@ fn make_unhealthy(client: &LendingContractClient, user: &Address) {
 /// correct repaid amount. Proves checked_sub doesn't change the happy path.
 #[test]
 fn test_liquidation_partial_succeeds() {
-    let (_env, client, _id, user, liquidator, debt_asset, collateral_asset) = setup();
-    make_unhealthy(&client, &user);
+    let (env, client, _id, user, liquidator, debt_asset, collateral_asset) = setup();
+    make_unhealthy(&env, &client, &user);
 
     // max_repay = 200 * 5000 / 10000 = 100; request 50 (well within clamp).
     let repaid = client.liquidate(&liquidator, &user, &debt_asset, &collateral_asset, &50);
@@ -69,8 +83,8 @@ fn test_liquidation_partial_succeeds() {
 /// actual_repay == max_repay == debt/2, so new_debt = debt - debt/2 = debt/2 ≥ 0.
 #[test]
 fn test_liquidation_at_close_factor_cap_succeeds() {
-    let (_env, client, _id, user, liquidator, debt_asset, collateral_asset) = setup();
-    make_unhealthy(&client, &user);
+    let (env, client, _id, user, liquidator, debt_asset, collateral_asset) = setup();
+    make_unhealthy(&env, &client, &user);
 
     // max_repay = 200 * 50% = 100.
     let repaid = client.liquidate(&liquidator, &user, &debt_asset, &collateral_asset, &1000); // over-request → clamped to 100
@@ -84,7 +98,7 @@ fn test_liquidation_at_close_factor_cap_succeeds() {
 #[test]
 fn test_close_factor_clamp_prevents_repay_exceeding_debt() {
     let (_env, client, _id, user, liquidator, debt_asset, collateral_asset) = setup();
-    make_unhealthy(&client, &user);
+    make_unhealthy(&_env, &client, &user);
 
     // Request more than entire debt — must be clamped to max_repay.
     let repaid = client.liquidate(&liquidator, &user, &debt_asset, &collateral_asset, &999_999);

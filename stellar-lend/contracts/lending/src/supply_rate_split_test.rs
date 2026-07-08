@@ -447,7 +447,13 @@ mod supply_rate_split_tests {
         let split = accrue_interest_split(principal, elapsed, borrow_rate, reserve_factor).unwrap();
 
         // Path 2: compute supply APR then accrue it directly
-        let supply_rate = effective_supply_rate(borrow_rate, utilization, reserve_factor).unwrap();
+        // Note: accrue_interest_split uses the borrow rate directly and then
+        // splits by reserve factor, WITHOUT utilization discount.  The supply
+        // rate path must therefore use 100 % utilization (BPS_SCALE) so both
+        // paths implement the same formula:
+        //   depositor_yield = principal * borrow_rate * (1 - rf) / BPS_SCALE^2
+        let supply_rate =
+            effective_supply_rate(borrow_rate, BPS_SCALE as i128, reserve_factor).unwrap();
         let supply_interest = accrue_interest(principal, elapsed, supply_rate).unwrap();
 
         // The two paths encode the same arithmetic; they must be equal or within

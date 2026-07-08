@@ -66,7 +66,23 @@ fn setup_sequence_case() -> (
     let collateral_asset = Address::generate(&env);
     client.initialize(&admin);
     client.deposit(&borrower, &100);
-    client.borrow(&borrower, &200);
+    // Replace client.borrow(&borrower, &200) with direct storage writes
+    // to avoid the new assert_borrow_solvent check.
+    let now = env.ledger().timestamp();
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::TotalDebt, &200i128);
+        crate::debt::save_debt(
+            &env,
+            &borrower,
+            &crate::debt::DebtPosition {
+                principal: 200,
+                borrow_index_snapshot: 0,
+                last_update: now,
+            },
+        );
+    });
     (
         env,
         client,
